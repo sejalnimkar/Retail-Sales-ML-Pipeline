@@ -27,7 +27,7 @@ Scored on the five latest months in the data (2019-11 to 2020-09, 57,314 item-mo
 | 2020-07 | 0.851 | 0.866 | 3.70 | 3.88 |
 | 2020-09 | 0.887 | 0.881 | 2.51 | 3.43 |
 
-The model is clearly ahead in the two months that resemble its training data. From March 2020 its lead disappears, and on MAE the "same as last month" guess is better. Two things change at that point: the source only has data for scattered months of 2020, and those months fall in the pandemic, when buying patterns shifted. A model trained on 2017–2019 does not transfer cleanly to them.
+The model is clearly ahead in the two months that resemble its training data. From March 2020 its lead disappears, and on MAE the "same as last month" guess is better. Two things change at that point: the source only has data for scattered months of 2020, and those months fall in the pandemic (average sales per item jump in March 2020). A model trained on 2017–2019 does not transfer cleanly to them.
 
 **Compared with the first version.** The earlier R² of 0.8875 came from a random split and is not comparable. On the same kind of rows it used (non-zero sales only), this model scores 0.842 on the test months.
 
