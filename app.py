@@ -54,7 +54,7 @@ st.divider()
 
 if st.button("Forecast retail sales", use_container_width=True):
     prediction = pipeline.predict(item_code, year=target // 12, month=target % 12 + 1)
-    st.success(f"**Forecast: {prediction:,.1f} units**")
+    st.success(f"**Forecast: {prediction:,.1f} cases**")
 
 st.subheader("What the forecast is based on")
 st.dataframe(
@@ -62,10 +62,10 @@ st.dataframe(
         {
             "Value": {
                 "Item type": history["ITEM TYPE"],
-                "Retail sales, last recorded month (units)": f"{history['PREV_RETAIL_SALES']:,.1f}",
-                "Warehouse sales, last recorded month (units)": f"{history['PREV_WAREHOUSE_SALES']:,.1f}",
-                "Average monthly retail sales (units)": f"{history['ITEM_MEAN_RETAIL_PRIOR']:,.1f}",
-                "Months of history": int(history["ITEM_MONTHS_OBSERVED"]),
+                "Retail sales, last recorded month (cases)": f"{history['PREV_RETAIL_SALES']:,.1f}",
+                "Warehouse sales, last recorded month (cases)": f"{history['PREV_WAREHOUSE_SALES']:,.1f}",
+                "Average retail sales, last 3 recorded months (cases)": f"{history['RETAIL_MEAN_LAST3']:,.1f}",
+                "Months of history since the last break in the data": int(history["ITEM_MONTHS_OBSERVED"]),
             }
         }
     ),

@@ -7,6 +7,7 @@ from src.components.data_transformation import (
     FEATURE_COLUMNS,
     HISTORY_FEATURES,
     add_history_features,
+    assign_segments,
     build_preprocessor,
     features_for_month,
     from_target,
@@ -41,9 +42,9 @@ def test_history_features_by_hand():
     first, second, third = (out.iloc[i] for i in range(3))
     assert first[HISTORY_FEATURES].drop("ITEM_MONTHS_OBSERVED").isna().all()  # new item: nothing known
     assert first["ITEM_MONTHS_OBSERVED"] == 0
-    assert (second["PREV_RETAIL_SALES"], second["ITEM_MEAN_RETAIL_PRIOR"], second["PERIODS_SINCE_LAST"]) == (10, 10, 1)
+    assert (second["PREV_RETAIL_SALES"], second["RETAIL_MEAN_LAST3"], second["PERIODS_SINCE_LAST"]) == (10, 10, 1)
     assert (third["PREV_RETAIL_SALES"], third["PREV_WAREHOUSE_SALES"]) == (20, 6)
-    assert third["ITEM_MEAN_RETAIL_PRIOR"] == 15      # mean of 10 and 20, not including 60
+    assert third["RETAIL_MEAN_LAST3"] == 15           # mean of 10 and 20, not including 60
     # A missed one month of data (104). The months the source skipped (102, 103) do not count.
     assert (third["ITEM_MONTHS_OBSERVED"], third["PERIODS_SINCE_LAST"]) == (2, 2)
 
@@ -108,3 +109,44 @@ def test_preprocessor_accepts_unseen_supplier_and_new_items(raw):
     row["SUPPLIER"] = "A SUPPLIER NOBODY HAS SEEN"
     row[HISTORY_FEATURES] = np.nan
     assert np.isfinite(pre.transform(row)).all()
+
+
+def test_segments_split_only_on_long_holes():
+    periods = pd.Series([100, 101, 112, 113, 200, 201])  # 11-month hole, then an 87-month one
+    assert assign_segments(periods).tolist() == [0, 0, 0, 0, 1, 1]
+
+
+def test_history_does_not_cross_a_break():
+    df = pd.DataFrame(
+        {
+            "ITEM CODE": ["A"] * 5,
+            "PERIOD": [100, 101, 102, 170, 171],  # 68-month break before 170
+            "RETAIL SALES": [10.0, 20.0, 30.0, 4.0, 6.0],
+            "RETAIL TRANSFERS": [0.0] * 5,
+            "WAREHOUSE SALES": [0.0] * 5,
+        }
+    )
+    out = item(add_history_features(df), "A")
+    after_break, next_month = out.iloc[3], out.iloc[4]
+    assert after_break["ITEM_MONTHS_OBSERVED"] == 0 and pd.isna(after_break["PREV_RETAIL_SALES"])
+    assert (next_month["PREV_RETAIL_SALES"], next_month["RETAIL_MEAN_LAST3"]) == (4.0, 4.0)
+
+
+def test_last3_average_uses_only_the_three_latest_earlier_months():
+    df = pd.DataFrame(
+        {
+            "ITEM CODE": ["A"] * 5,
+            "PERIOD": [100, 101, 102, 103, 104],
+            "RETAIL SALES": [100.0, 1.0, 2.0, 3.0, 50.0],
+            "RETAIL TRANSFERS": [0.0] * 5,
+            "WAREHOUSE SALES": [0.0] * 5,
+        }
+    )
+    assert item(add_history_features(df), "A").iloc[4]["RETAIL_MEAN_LAST3"] == 2.0
+
+
+def test_cannot_forecast_more_than_a_year_past_the_data(raw):
+    state = latest_item_state(clean(raw)).head(1)
+    end = int(state["DATA_END_PERIOD"].iloc[0]) + 13
+    with pytest.raises(ValueError):
+        features_for_month(state, end // 12, end % 12 + 1)

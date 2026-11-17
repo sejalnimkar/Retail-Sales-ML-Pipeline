@@ -66,3 +66,30 @@ def test_streamlit_app_runs_and_forecasts(trained, monkeypatch):
     app.button[0].click().run()
     assert not app.exception
     assert "Forecast:" in app.success[0].value
+
+
+def test_part_one_stays_before_the_break_and_part_two_covers_after_it(trained):
+    _, results = trained
+    assert results["split"]["test"][1] < "2026"
+    wf = results["walk_forward"]
+    assert wf["model"] == results["selected_model"]
+    assert [r["month"] for r in wf["by_month"]] == ["2026-07", "2026-08", "2026-09"]  # 2026-06 has no history
+    assert set(wf["overall"]) == set(BASELINES) | {results["selected_model"]}
+
+
+def test_app_only_offers_items_from_the_latest_stretch_of_data(trained):
+    out, _ = trained
+    pipeline = PredictPipeline(str(out / "artifacts" / "model.pkl"), str(out / "artifacts" / "item_state.csv"))
+    assert (pipeline.item_state["LAST_PERIOD"] >= 2026 * 12).all()
+
+
+def test_score_month_scores_one_month_with_the_recorded_model(trained, raw_csv):
+    from src.pipeline.score_month import run as score_month
+
+    out, results = trained
+    result = score_month(raw_csv, "2026-09", reports_dir=str(out / "reports"))
+    assert result["model"] == results["selected_model"]
+    assert [r["month"] for r in result["by_month"]] == ["2026-09"]
+    assert (out / "reports" / "score_2026-09.md").exists()
+    with pytest.raises(ValueError, match="first month after a break"):
+        score_month(raw_csv, "2026-06", reports_dir=str(out / "reports"))

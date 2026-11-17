@@ -4,6 +4,11 @@ Feature engineering and preprocessing.
 Every history feature for a row describes months BEFORE that row's month,
 so nothing about the month being predicted (including its warehouse sales,
 which the first version of this project used) can reach the model.
+
+History also stops at a break in the source: when more than
+MAX_GAP_MONTHS calendar months pass with no data at all (the county file
+jumps from September 2020 to June 2026), sales from before the break are not
+treated as an item's "last month". Sales quantities are in cases.
 """
 
 import numpy as np
@@ -19,7 +24,7 @@ HISTORY_FEATURES = [
     "PREV_RETAIL_SALES",       # the item's retail sales in its most recent earlier month
     "PREV_RETAIL_TRANSFERS",
     "PREV_WAREHOUSE_SALES",
-    "ITEM_MEAN_RETAIL_PRIOR",  # the item's average retail sales over all earlier months
+    "RETAIL_MEAN_LAST3",       # the item's average retail sales over its last 3 earlier months
     "ITEM_MONTHS_OBSERVED",    # how many earlier months the item appears in (0 = new item)
     "PERIODS_SINCE_LAST",      # how many months of data ago that was (1 = the previous month in the data)
 ]
@@ -32,20 +37,32 @@ FEATURE_COLUMNS = NUMERICAL_COLUMNS + CATEGORICAL_COLUMNS
 # Suppliers beyond the most common ones are grouped together by the encoder.
 MAX_SUPPLIER_CATEGORIES = 31
 
+# A hole in the source longer than this starts a new segment with no history.
+# The county file has an 11-month hole (2018-02 to 2019-01), kept as one
+# segment, and a 69-month hole (2020-09 to 2026-06), which is a break.
+MAX_GAP_MONTHS = 12
+
+
+def assign_segments(periods: pd.Series, max_gap: int = MAX_GAP_MONTHS) -> pd.Series:
+    """Number the stretches of data between breaks: 0, 1, 2, ..."""
+    distinct = np.sort(periods.unique())
+    segment_of = dict(zip(distinct, np.concatenate([[0], np.cumsum(np.diff(distinct) > max_gap)]), strict=True))
+    return periods.map(segment_of).astype(int)
+
 
 def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add the HISTORY_FEATURES columns. Expects one row per (ITEM CODE, PERIOD)."""
     df = df.sort_values(["ITEM CODE", "PERIOD"]).copy()
     df["PERIOD_INDEX"] = df["PERIOD"].rank(method="dense").astype(int)
-    by_item = df.groupby("ITEM CODE", sort=False)
+    df["SEGMENT"] = assign_segments(df["PERIOD"])
+    by_item = df.groupby(["ITEM CODE", "SEGMENT"], sort=False)
 
     df["PREV_RETAIL_SALES"] = by_item["RETAIL SALES"].shift(1)
     df["PREV_RETAIL_TRANSFERS"] = by_item["RETAIL TRANSFERS"].shift(1)
     df["PREV_WAREHOUSE_SALES"] = by_item["WAREHOUSE SALES"].shift(1)
     df["ITEM_MONTHS_OBSERVED"] = by_item.cumcount()
-    # cumsum includes the current row, so subtract it to get "earlier months only".
-    prior_total = by_item["RETAIL SALES"].cumsum() - df["RETAIL SALES"]
-    df["ITEM_MEAN_RETAIL_PRIOR"] = (prior_total / df["ITEM_MONTHS_OBSERVED"]).where(df["ITEM_MONTHS_OBSERVED"] > 0)
+    last3 = pd.concat([by_item["RETAIL SALES"].shift(k) for k in (1, 2, 3)], axis=1)
+    df["RETAIL_MEAN_LAST3"] = last3.mean(axis=1, skipna=True)
     # Counted in months that exist in the data, not calendar months. The source
     # skips some months entirely; an item present on both sides of such a hole
     # has not been "away", and a calendar gap would wrongly say it had.
@@ -112,7 +129,11 @@ def latest_item_state(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.sort_values(["ITEM CODE", "PERIOD"]).copy()
     df["PERIOD_INDEX"] = df["PERIOD"].rank(method="dense").astype(int)
+    df["SEGMENT"] = assign_segments(df["PERIOD"])
+    data_end = df["PERIOD"].max()
     newest = df["PERIOD_INDEX"].max()
+    # Only the latest stretch of data counts as an item's history.
+    df = df[df["SEGMENT"] == df["SEGMENT"].max()]
     by_item = df.groupby("ITEM CODE", sort=False)
     last = by_item.tail(1).set_index("ITEM CODE")
     return pd.DataFrame(
@@ -121,13 +142,13 @@ def latest_item_state(df: pd.DataFrame) -> pd.DataFrame:
             "ITEM TYPE": last["ITEM TYPE"],
             "SUPPLIER": last["SUPPLIER"],
             "LAST_PERIOD": last["PERIOD"],
-            "DATA_END_PERIOD": df["PERIOD"].max(),
+            "DATA_END_PERIOD": data_end,
             # If the forecast month were the next month of data, this would be its PERIODS_SINCE_LAST.
             "PERIODS_SINCE_LAST": newest - last["PERIOD_INDEX"] + 1,
             "PREV_RETAIL_SALES": last["RETAIL SALES"],
             "PREV_RETAIL_TRANSFERS": last["RETAIL TRANSFERS"],
             "PREV_WAREHOUSE_SALES": last["WAREHOUSE SALES"],
-            "ITEM_MEAN_RETAIL_PRIOR": by_item["RETAIL SALES"].mean(),
+            "RETAIL_MEAN_LAST3": by_item.tail(3).groupby("ITEM CODE", sort=False)["RETAIL SALES"].mean(),
             "ITEM_MONTHS_OBSERVED": by_item.size(),
         }
     ).reset_index()
@@ -142,5 +163,7 @@ def features_for_month(item_state: pd.DataFrame, year: int, month: int) -> pd.Da
     frame = item_state.copy()
     if (frame["DATA_END_PERIOD"] >= period).any():
         raise ValueError("the forecast month must be after the last month in the data")
+    if (period - frame["DATA_END_PERIOD"] > MAX_GAP_MONTHS).any():
+        raise ValueError(f"the forecast month must be within {MAX_GAP_MONTHS} months of the end of the data")
     frame["MONTH"] = int(month)
     return frame[FEATURE_COLUMNS]

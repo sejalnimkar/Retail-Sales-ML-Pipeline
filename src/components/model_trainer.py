@@ -26,7 +26,7 @@ from src.utils import score
 
 BASELINES = {
     "Baseline: last observed month": "PREV_RETAIL_SALES",
-    "Baseline: item's historical average": "ITEM_MEAN_RETAIL_PRIOR",
+    "Baseline: average of last 3 months": "RETAIL_MEAN_LAST3",
 }
 
 
@@ -49,7 +49,7 @@ def fit(pipeline: Pipeline, frame: pd.DataFrame) -> Pipeline:
     return pipeline.fit(frame[FEATURE_COLUMNS], to_target(frame[TARGET_COLUMN]))
 
 
-def predict_units(pipeline: Pipeline, frame: pd.DataFrame) -> np.ndarray:
+def predict_cases(pipeline: Pipeline, frame: pd.DataFrame) -> np.ndarray:
     return from_target(pipeline.predict(frame[FEATURE_COLUMNS]))
 
 
@@ -63,14 +63,14 @@ def train_and_evaluate(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFram
     validation = baseline_scores(val)
     for name, model in candidate_models().items():
         pipeline = fit(make_pipeline(model), train)
-        validation[name] = score(val[TARGET_COLUMN], predict_units(pipeline, val))
+        validation[name] = score(val[TARGET_COLUMN], predict_cases(pipeline, val))
         logger.info("%s: validation R² (log) = %.4f", name, validation[name]["r2_log"])
 
     best_name = max(candidate_models(), key=lambda n: validation[n]["r2_log"])
     logger.info("Selected on validation: %s", best_name)
 
     final = fit(make_pipeline(candidate_models()[best_name]), pd.concat([train, val], ignore_index=True))
-    test_predictions = predict_units(final, test)
+    test_predictions = predict_cases(final, test)
     test_scores = baseline_scores(test)
     test_scores[best_name] = score(test[TARGET_COLUMN], test_predictions)
 
@@ -102,3 +102,37 @@ def train_and_evaluate(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFram
         },
     }
     return final, results
+
+
+def walk_forward(featured: pd.DataFrame, months: list[int], model_name: str) -> dict:
+    """
+    For each month in `months`: train `model_name` on every row before that
+    month, forecast the month, and score it against the baselines. This is
+    how the model would be used: retrained as each new month arrives.
+    Nothing is re-tuned here; the model and its settings are fixed in advance.
+    """
+    by_month, actual, predicted, baseline_preds = [], [], [], {name: [] for name in BASELINES}
+    for month in months:
+        train = featured[featured["PERIOD"] < month]
+        target = featured[featured["PERIOD"] == month]
+        if target.empty:
+            raise ValueError(f"no rows for month {month // 12}-{month % 12 + 1:02d}")
+        pipeline = fit(make_pipeline(candidate_models()[model_name]), train)
+        forecast = predict_cases(pipeline, target)
+        row = {
+            "month": f"{month // 12}-{month % 12 + 1:02d}",
+            "rows": len(target),
+            "model": score(target[TARGET_COLUMN], forecast),
+        }
+        for name, col in BASELINES.items():
+            row[name] = score(target[TARGET_COLUMN], target[col].fillna(0.0))
+            baseline_preds[name].append(target[col].fillna(0.0).to_numpy())
+        by_month.append(row)
+        logger.info("Walk-forward %s: model MAE %.2f, last-month baseline MAE %.2f",
+                    row["month"], row["model"]["mae"], row["Baseline: last observed month"]["mae"])
+        actual.append(target[TARGET_COLUMN].to_numpy())
+        predicted.append(forecast)
+    actual = np.concatenate(actual)
+    overall = {model_name: score(actual, np.concatenate(predicted))}
+    overall.update({name: score(actual, np.concatenate(p)) for name, p in baseline_preds.items()})
+    return {"model": model_name, "overall": overall, "by_month": by_month}

@@ -27,7 +27,7 @@ class PredictPipeline:
         return match.iloc[0]
 
     def predict(self, item_code: str, year: int, month: int) -> float:
-        """Forecast retail sales (units) for one item in (year, month)."""
+        """Forecast retail sales (cases) for one item in (year, month)."""
         self.history(item_code)  # raises a clear error for an unknown item
         state = self.item_state[self.item_state["ITEM CODE"] == str(item_code)].head(1)
         features = features_for_month(state, year, month)

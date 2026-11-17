@@ -18,14 +18,14 @@ def load_object(file_path: str):
         return pickle.load(file_obj)
 
 
-def score(actual_units, predicted_units) -> dict:
+def score(actual_cases, predicted_cases) -> dict:
     """
     r2_log - R² on log1p(sales), the scale the model is trained on
-    mae    - average miss in units per item-month
-    wape   - total absolute miss / total units sold
+    mae    - average miss in cases per item-month
+    wape   - total absolute miss / total cases sold
     """
-    actual = np.clip(np.asarray(actual_units, dtype=float), 0, None)
-    predicted = np.clip(np.asarray(predicted_units, dtype=float), 0, None)
+    actual = np.clip(np.asarray(actual_cases, dtype=float), 0, None)
+    predicted = np.clip(np.asarray(predicted_cases, dtype=float), 0, None)
     if len(actual) == 0:
         raise ValueError("cannot score an empty set")
     abs_err = np.abs(actual - predicted)

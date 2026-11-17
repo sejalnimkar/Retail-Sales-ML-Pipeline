@@ -3,7 +3,11 @@ import pandas as pd
 import pytest
 
 # Mirrors the real data: some calendar months are missing from the source.
-PERIODS = [(2017, m) for m in range(6, 13)] + [(2018, 1), (2018, 2)] + [(2019, m) for m in range(1, 8)]
+# Like the real file: an 11-month hole that is not a break, then a multi-year break.
+PERIODS = (
+    [(2017, m) for m in range(6, 13)] + [(2018, 1), (2018, 2)] + [(2019, m) for m in range(1, 8)]
+    + [(2026, m) for m in range(6, 10)]
+)
 SUPPLIERS = [f"SUPPLIER {i:02d}" for i in range(40)]
 ITEM_TYPES = ["WINE", "BEER", "LIQUOR", "NON-ALCOHOL"]
 
