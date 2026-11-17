@@ -1,65 +1,34 @@
+"""Inference: forecast an item's retail sales for a future month from its saved history."""
+
 import os
-import sys
-import numpy as np
+
 import pandas as pd
-from src.exception import CustomException
+
+from src.components.data_transformation import features_for_month, from_target
 from src.utils import load_object
+
+MODEL_PATH = os.path.join("artifacts", "model.pkl")
+ITEM_STATE_PATH = os.path.join("artifacts", "item_state.csv")
 
 
 class PredictPipeline:
-    def __init__(self):
-        pass
+    def __init__(self, model_path: str = MODEL_PATH, item_state_path: str = ITEM_STATE_PATH):
+        self.model = load_object(model_path)
+        self.item_state = pd.read_csv(item_state_path, dtype={"ITEM CODE": str})
 
-    def predict(self, features: pd.DataFrame):
-        """
-        Takes a DataFrame of raw features, returns predictions in the
-        original sales scale (undoes the log1p transform applied during training).
-        """
-        try:
-            model_path       = os.path.join("artifacts", "model.pkl")
-            preprocessor_path = os.path.join("artifacts", "preprocessor.pkl")
+    def items(self) -> pd.DataFrame:
+        """Items the model has history for, for populating a picker."""
+        return self.item_state[["ITEM CODE", "ITEM DESCRIPTION", "ITEM TYPE", "SUPPLIER"]]
 
-            model        = load_object(file_path=model_path)
-            preprocessor = load_object(file_path=preprocessor_path)
+    def history(self, item_code: str) -> pd.Series:
+        match = self.item_state[self.item_state["ITEM CODE"] == str(item_code)]
+        if match.empty:
+            raise KeyError(f"no history for item code {item_code!r}")
+        return match.iloc[0]
 
-            data_scaled   = preprocessor.transform(features)
-            log_preds     = model.predict(data_scaled)
-
-            # Undo log1p so the returned value is in original dollar/unit scale
-            preds = np.expm1(log_preds)
-            return preds
-
-        except Exception as e:
-            raise CustomException(e, sys)
-
-
-class CustomData:
-    """
-    Captures one prediction request and converts it to a DataFrame
-    that matches exactly the features the pipeline was trained on.
-    """
-    def __init__(
-        self,
-        year: int,
-        month: int,
-        supplier: str,
-        item_type: str,
-        warehouse_sales: float,
-    ):
-        self.year            = year
-        self.month           = month
-        self.supplier        = supplier
-        self.item_type       = item_type
-        self.warehouse_sales = warehouse_sales
-
-    def get_data_as_data_frame(self) -> pd.DataFrame:
-        try:
-            return pd.DataFrame({
-                "YEAR":            [self.year],
-                "MONTH":           [self.month],
-                "SUPPLIER":        [self.supplier],
-                "ITEM TYPE":       [self.item_type],
-                "WAREHOUSE SALES": [self.warehouse_sales],
-            })
-        except Exception as e:
-            raise CustomException(e, sys)
+    def predict(self, item_code: str, year: int, month: int) -> float:
+        """Forecast retail sales (cases) for one item in (year, month)."""
+        self.history(item_code)  # raises a clear error for an unknown item
+        state = self.item_state[self.item_state["ITEM CODE"] == str(item_code)].head(1)
+        features = features_for_month(state, year, month)
+        return float(from_target(self.model.predict(features))[0])
