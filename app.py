@@ -1,64 +1,74 @@
-import streamlit as st
 import pandas as pd
-import numpy as np
-from src.pipeline.predict_pipeline import CustomData, PredictPipeline
+import streamlit as st
 
-st.set_page_config(page_title="Retail Sales Predictor", layout="centered")
+from src.components.data_ingestion import period_label
+from src.pipeline.predict_pipeline import PredictPipeline
 
-st.title("Warehouse & Retail Sales Predictor")
-st.markdown("Predict monthly retail sales for a liquor item based on supplier, category, and warehouse movement.")
+st.set_page_config(page_title="Retail Sales Forecaster", layout="centered")
+
+st.title("Montgomery County Retail Sales Forecaster")
+st.markdown(
+    "Forecast an item's monthly retail sales from its own sales history. "
+    "Pick a supplier and item, then the month to forecast."
+)
+
+
+@st.cache_resource
+def load_pipeline() -> PredictPipeline:
+    return PredictPipeline()
+
+
+try:
+    pipeline = load_pipeline()
+except FileNotFoundError:
+    st.error("No trained model found. Run `python -m src.pipeline.train_pipeline --data <path to csv>` first.")
+    st.stop()
+
+items = pipeline.items()
 
 st.divider()
-
 col1, col2 = st.columns(2)
 
 with col1:
-    year = st.selectbox("Year", options=[2017, 2018, 2019, 2020])
-    st.caption("Year the sale occurred. The dataset covers 2017–2020.")
+    supplier = st.selectbox("Supplier", options=sorted(items["SUPPLIER"].dropna().unique()))
+    supplier_items = items[items["SUPPLIER"] == supplier].sort_values("ITEM DESCRIPTION")
+    item_code = st.selectbox(
+        "Item",
+        options=supplier_items["ITEM CODE"],
+        format_func=lambda code: (
+            f"{supplier_items.set_index('ITEM CODE').loc[code, 'ITEM DESCRIPTION']} ({code})"
+        ),
+    )
 
-    month = st.selectbox("Month", options=list(range(1, 13)),
-                         format_func=lambda x: pd.Timestamp(2020, x, 1).strftime("%B"))
-    st.caption("Month of the sale. Seasonal patterns vary across item types.")
-
-    item_type = st.selectbox("Item Type", options=["LIQUOR", "WINE", "BEER", "NON-ALCOHOL"])
-    st.caption("Product category. Liquor and Beer tend to have higher average retail volumes.")
+history = pipeline.history(item_code)
+last_period = int(history["LAST_PERIOD"])
+data_end = int(history["DATA_END_PERIOD"])
+# Offer the six months after the data ends.
+choices = [data_end + i for i in range(1, 7)]
 
 with col2:
-    supplier = st.selectbox("Supplier", options=[
-        "E & J GALLO WINERY", "DIAGEO NORTH AMERICA INC", "CONSTELLATION BRANDS",
-        "ANHEUSER BUSCH INC", "JIM BEAM BRANDS CO", "MILLER BREWING COMPANY",
-        "CROWN IMPORTS", "SAZERAC CO", "BACARDI USA INC", "THE WINE GROUP",
-        "PERNOD RICARD USA LLC", "HEINEKEN USA", "HEAVEN HILL DISTILLERIES INC",
-        "BROWN-FORMAN BEVERAGES WORLDWIDE", "FIFTH GENERATION INC",
-        "BOSTON BEER CORPORATION", "DELICATO FAMILY VINEYARDS",
-        "DEUTSCH FAMILY WINE & SPIRITS", "TREASURY WINE ESTATES AMERICAS COMPANY",
-        "PROXIMO SPIRITS INC", "REPUBLIC NATIONAL DISTRIBUTING CO",
-        "SOUTHERN GLAZERS WINE AND SPIRITS", "JACKSON FAMILY ENTERPRISES INC",
-        "MARK ANTHONY BRANDS INC", "YUENGLING BREWERY",
-        "CAMPARI AMERICA LLC", "TROEGS BREWING COMPANY",
-        "SIERRA NEVADA BREWING CO", "ATLAS BREW WORKS LLC", "LEGENDS LTD",
-        "OTHER"
-    ])
-    st.caption("Distributor supplying the product to Montgomery County. Top 30 suppliers by retail volume are listed; all others fall under 'OTHER'.")
-
-    warehouse_sales = st.number_input("Warehouse Sales (units)", min_value=0.0,
-                                      max_value=10000.0, value=10.0, step=0.5)
-    st.caption("Units moved from the warehouse that month. This is the strongest continuous predictor of retail demand — higher warehouse movement typically signals higher retail sales.")
+    target = st.selectbox("Month to forecast", options=choices, format_func=period_label)
+    st.caption(f"Last recorded month for this item: {period_label(last_period)}.")
 
 st.divider()
 
-if st.button("Predict Retail Sales", use_container_width=True):
-    data = CustomData(
-        year=year,
-        month=month,
-        supplier=supplier,
-        item_type=item_type,
-        warehouse_sales=warehouse_sales,
-    )
-    df = data.get_data_as_data_frame()
+if st.button("Forecast retail sales", use_container_width=True):
+    prediction = pipeline.predict(item_code, year=target // 12, month=target % 12 + 1)
+    st.success(f"**Forecast: {prediction:,.1f} cases**")
 
-    pipeline = PredictPipeline()
-    prediction = pipeline.predict(df)
-
-    st.success(f"**Predicted Retail Sales: {prediction[0]:,.2f} units**")
-    st.caption("Prediction is based on a Random Forest model trained on Montgomery County warehouse and retail sales data (2017–2020).")
+st.subheader("What the forecast is based on")
+st.dataframe(
+    pd.DataFrame(
+        {
+            "Value": {
+                "Item type": history["ITEM TYPE"],
+                "Retail sales, last recorded month (cases)": f"{history['PREV_RETAIL_SALES']:,.1f}",
+                "Warehouse sales, last recorded month (cases)": f"{history['PREV_WAREHOUSE_SALES']:,.1f}",
+                "Average retail sales, last 3 recorded months (cases)": f"{history['RETAIL_MEAN_LAST3']:,.1f}",
+                "Months of history since the last break in the data": int(history["ITEM_MONTHS_OBSERVED"]),
+            }
+        }
+    ),
+    use_container_width=True,
+)
+st.caption("Model accuracy on held-out months is reported in reports/results.md.")
