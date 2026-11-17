@@ -6,6 +6,8 @@ filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# Exploratory notebooks are not linted; the pipeline code in src/ and tests/ is.
+extend-exclude = ["notebook"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
