@@ -43,10 +43,11 @@ def test_period_label():
 
 
 def test_to_number_reads_text_sales_values():
-    raw = pd.Series(["1,234.50", " 7 ", "", "N/A", "-3", "abc"], dtype="string")
+    raw = pd.Series(["1,234.50", " 7 ", "", "N/A", "-3", "abc", "(2.00)", "(1,298.00)"], dtype="string")
     out = to_number(raw, "RETAIL SALES")
     assert out.iloc[:2].tolist() == [1234.5, 7.0]
     assert out.iloc[2:4].isna().all() and out.iloc[4] == -3.0 and pd.isna(out.iloc[5])
+    assert out.iloc[6:].tolist() == [-2.0, -1298.0]  # accounting-style negatives
 
 
 def test_clean_handles_a_file_where_every_column_is_text(raw, tmp_path):

@@ -34,12 +34,15 @@ def load_raw(path: str) -> pd.DataFrame:
 def to_number(values: pd.Series, column: str) -> pd.Series:
     """
     Parse a column that should be numeric but may arrive as text, as in some
-    downloads of the county file: thousands separators ("1,234.50"), stray
-    spaces, or blanks. Anything still unreadable becomes missing and is logged.
+    downloads of the county file: thousands separators ("1,234.50"),
+    accounting-style negatives ("(2.00)"), stray spaces, or blanks.
+    Anything still unreadable becomes missing and is logged.
     """
     if pd.api.types.is_numeric_dtype(values):
         return values.astype(float)
     text = values.astype("string").str.strip().str.replace(",", "", regex=False)
+    # Accounting format: "(2.00)" means -2.00 (a month of net returns).
+    text = text.str.replace(r"^\((.*)\)$", r"-\1", regex=True)
     text = text.mask(text.isin(["", "-", "NA", "N/A", "NULL", "null", "nan"]))
     numbers = pd.to_numeric(text, errors="coerce")
     unreadable = numbers.isna() & text.notna()
