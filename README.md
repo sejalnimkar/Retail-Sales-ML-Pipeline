@@ -2,14 +2,38 @@
 
 [![CI](https://github.com/sejalnimkar/retail-sales-ml-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/sejalnimkar/retail-sales-ml-pipeline/actions/workflows/ci.yml)
 
-A machine learning pipeline that forecasts next-month retail sales for individual liquor, wine, beer and non-alcohol products in Montgomery County, MD, using only what is known before the month starts. Built on public county data (307K+ item-month records, 2017–2020), evaluated on months the model never saw, with a Streamlit app for interactive forecasts.
+A machine learning pipeline that forecasts next-month retail sales for individual liquor, wine, beer and non-alcohol products in Montgomery County, MD, using only what is known before the month starts. Built on public county data (307K+ records, 2017–2020), evaluated on months the model never saw, with a Streamlit app for interactive forecasts.
 
 ---
 
 ## Results
 
 <!-- RESULTS:START -->
-_Pending a run on the full dataset. `python -m src.pipeline.train_pipeline` writes them to [`reports/results.md`](reports/results.md)._
+Scored on the five latest months in the data (2019-11 to 2020-09, 57,314 item-months), which the model never saw during training or model selection.
+
+| Method | R² (log scale) | MAE (units) | WAPE |
+|---|---|---|---|
+| **XGBoost** | 0.896 | 3.39 | 42.7% |
+| Baseline: same as the item's last recorded month | 0.872 | 3.48 | 43.9% |
+| Baseline: the item's historical average | 0.841 | 3.50 | 44.1% |
+
+**How to read this.** The model beats both baselines, but the margin on the test months is small: MAE 3.39 vs. 3.48 units. On the validation months (2019-06 to 2019-10) the margin was much wider: MAE 2.58 vs. 3.37. The month-by-month view shows why:
+
+| Test month | Baseline R² | Model R² | Baseline MAE | Model MAE |
+|---|---|---|---|---|
+| 2019-11 | 0.867 | 0.926 | 4.07 | 2.81 |
+| 2020-01 | 0.850 | 0.894 | 3.35 | 2.83 |
+| 2020-03 | 0.901 | 0.910 | 3.73 | 4.09 |
+| 2020-07 | 0.851 | 0.866 | 3.70 | 3.88 |
+| 2020-09 | 0.887 | 0.881 | 2.51 | 3.43 |
+
+The model is clearly ahead in the two months that resemble its training data. From March 2020 its lead disappears, and on MAE the "same as last month" guess is better. Two things change at that point: the source only has data for scattered months of 2020, and those months fall in the pandemic, when buying patterns shifted. A model trained on 2017–2019 does not transfer cleanly to them.
+
+**Compared with the first version.** The earlier R² of 0.8875 came from a random split and is not comparable. On the same kind of rows it used (non-zero sales only), this model scores 0.842 on the test months.
+
+**One disclosure.** The first full run exposed a flaw in a feature: the gap since an item's last appearance was counted in calendar months, so months missing from the source looked like the item being absent. It is now counted in months of data. The flaw was found by looking at test-month results, so the test score is not perfectly untouched. Validation scores did not move with the fix.
+
+Full tables, including scores by item type: [`reports/results.md`](reports/results.md).
 <!-- RESULTS:END -->
 
 ---
@@ -72,7 +96,7 @@ Pick a supplier and an item, choose a month after the item's last recorded month
 
 - 307,645 records of monthly item-level sales across suppliers and product categories
 - Covers LIQUOR, WINE, BEER, NON-ALCOHOL, KEGS, and store supplies
-- Some calendar months are missing from the source, so features measure gaps explicitly
+- 24 months of data between June 2017 and September 2020; many calendar months are missing from the source
 
 **Cleaning:**
 - Dropped KEGS, DUNNAGE, STR_SUPPLIES, REF (not retail products)
@@ -94,7 +118,7 @@ Every history feature describes months **before** the month being forecast.
 | PREV_WAREHOUSE_SALES | Warehouse sales in that month |
 | ITEM_MEAN_RETAIL_PRIOR | The item's average retail sales over all earlier months |
 | ITEM_MONTHS_OBSERVED | How many earlier months the item appears in (0 = new item) |
-| MONTHS_SINCE_LAST | Gap to the most recent earlier month |
+| PERIODS_SINCE_LAST | How many months of data ago that was (months missing from the source are not counted) |
 | MONTH | Calendar month of the forecast |
 | ITEM TYPE | LIQUOR / WINE / BEER / NON-ALCOHOL |
 | SUPPLIER | One-hot; rare and unseen suppliers are grouped |
@@ -147,6 +171,7 @@ pytest -q
 
 ## Limitations
 
+- **Thin margin under change.** The model's edge over "same as last month" is small on the 2020 test months (see Results). For a real decision, the baseline is a serious competitor.
 - **Short, gappy history.** The source covers parts of four years and skips months, so yearly seasonality cannot be learned well.
 - **New items.** An item with no history is forecast from its type and supplier only.
 - **One month ahead.** Forecasting further out reuses the same last-known history, so accuracy will fall with distance.

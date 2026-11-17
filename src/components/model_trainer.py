@@ -74,11 +74,25 @@ def train_and_evaluate(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFram
     test_scores = baseline_scores(test)
     test_scores[best_name] = score(test[TARGET_COLUMN], test_predictions)
 
+    by_month = []
+    for period in sorted(test["PERIOD"].unique()):
+        mask = (test["PERIOD"] == period).to_numpy()
+        part = test[mask]
+        by_month.append(
+            {
+                "month": f"{period // 12}-{period % 12 + 1:02d}",
+                "rows": int(mask.sum()),
+                "baseline_last_month": score(part[TARGET_COLUMN], part["PREV_RETAIL_SALES"].fillna(0.0)),
+                "model": score(part[TARGET_COLUMN], test_predictions[mask]),
+            }
+        )
+
     sold = (test[TARGET_COLUMN] > 0).to_numpy()
     results = {
         "selected_model": best_name,
         "validation": validation,
         "test": test_scores,
+        "test_by_month": by_month,
         # Comparable to the first version of the project, which only kept rows with sales.
         "test_rows_with_sales_only": score(test.loc[sold, TARGET_COLUMN], test_predictions[sold]),
         "test_by_item_type": {

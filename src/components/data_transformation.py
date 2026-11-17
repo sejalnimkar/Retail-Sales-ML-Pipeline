@@ -11,7 +11,7 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 
 TARGET_COLUMN = "RETAIL SALES"
 
@@ -21,9 +21,11 @@ HISTORY_FEATURES = [
     "PREV_WAREHOUSE_SALES",
     "ITEM_MEAN_RETAIL_PRIOR",  # the item's average retail sales over all earlier months
     "ITEM_MONTHS_OBSERVED",    # how many earlier months the item appears in (0 = new item)
-    "MONTHS_SINCE_LAST",       # gap to that most recent month (the data skips some months)
+    "PERIODS_SINCE_LAST",      # how many months of data ago that was (1 = the previous month in the data)
 ]
-NUMERICAL_COLUMNS = HISTORY_FEATURES + ["MONTH"]
+SALES_HISTORY_COLUMNS = HISTORY_FEATURES[:4]
+OTHER_NUMERICAL_COLUMNS = HISTORY_FEATURES[4:] + ["MONTH"]
+NUMERICAL_COLUMNS = SALES_HISTORY_COLUMNS + OTHER_NUMERICAL_COLUMNS
 CATEGORICAL_COLUMNS = ["ITEM TYPE", "SUPPLIER"]
 FEATURE_COLUMNS = NUMERICAL_COLUMNS + CATEGORICAL_COLUMNS
 
@@ -34,6 +36,7 @@ MAX_SUPPLIER_CATEGORIES = 31
 def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
     """Add the HISTORY_FEATURES columns. Expects one row per (ITEM CODE, PERIOD)."""
     df = df.sort_values(["ITEM CODE", "PERIOD"]).copy()
+    df["PERIOD_INDEX"] = df["PERIOD"].rank(method="dense").astype(int)
     by_item = df.groupby("ITEM CODE", sort=False)
 
     df["PREV_RETAIL_SALES"] = by_item["RETAIL SALES"].shift(1)
@@ -43,7 +46,10 @@ def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
     # cumsum includes the current row, so subtract it to get "earlier months only".
     prior_total = by_item["RETAIL SALES"].cumsum() - df["RETAIL SALES"]
     df["ITEM_MEAN_RETAIL_PRIOR"] = (prior_total / df["ITEM_MONTHS_OBSERVED"]).where(df["ITEM_MONTHS_OBSERVED"] > 0)
-    df["MONTHS_SINCE_LAST"] = df["PERIOD"] - by_item["PERIOD"].shift(1)
+    # Counted in months that exist in the data, not calendar months. The source
+    # skips some months entirely; an item present on both sides of such a hole
+    # has not been "away", and a calendar gap would wrongly say it had.
+    df["PERIODS_SINCE_LAST"] = df["PERIOD_INDEX"] - by_item["PERIOD_INDEX"].shift(1)
     return df.sort_values(["PERIOD", "ITEM CODE"]).reset_index(drop=True)
 
 
@@ -56,16 +62,30 @@ def from_target(log_sales) -> np.ndarray:
     return np.clip(np.expm1(np.asarray(log_sales, dtype=float)), 0, None)
 
 
+def signed_log1p(values):
+    """log1p that also accepts the occasional negative (a month of net returns)."""
+    values = np.asarray(values, dtype=float)
+    return np.sign(values) * np.log1p(np.abs(values))
+
+
 def build_preprocessor() -> ColumnTransformer:
     """
-    Numerical: median impute (new items have no history) -> scale.
+    Sales history: log scale (it is as skewed as the target) -> median impute -> scale.
+    Other numerical: median impute (new items have no history) -> scale.
     Categorical: one-hot; rare suppliers are grouped, and a supplier never
     seen in training is treated as rare rather than causing an error.
     Fitted inside the model pipeline, so it only ever learns from training rows.
     """
+    sales_history = Pipeline(
+        steps=[
+            ("log", FunctionTransformer(signed_log1p, feature_names_out="one-to-one")),
+            ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+            ("scaler", StandardScaler()),
+        ]
+    )
     numerical = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+            ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
         ]
     )
@@ -76,7 +96,8 @@ def build_preprocessor() -> ColumnTransformer:
     )
     return ColumnTransformer(
         transformers=[
-            ("numerical", numerical, NUMERICAL_COLUMNS),
+            ("sales_history", sales_history, SALES_HISTORY_COLUMNS),
+            ("numerical", numerical, OTHER_NUMERICAL_COLUMNS),
             ("categorical", categorical, CATEGORICAL_COLUMNS),
         ]
     )
@@ -89,7 +110,9 @@ def latest_item_state(df: pd.DataFrame) -> pd.DataFrame:
     quantities add_history_features would compute for a new row appended
     after the item's last month.
     """
-    df = df.sort_values(["ITEM CODE", "PERIOD"])
+    df = df.sort_values(["ITEM CODE", "PERIOD"]).copy()
+    df["PERIOD_INDEX"] = df["PERIOD"].rank(method="dense").astype(int)
+    newest = df["PERIOD_INDEX"].max()
     by_item = df.groupby("ITEM CODE", sort=False)
     last = by_item.tail(1).set_index("ITEM CODE")
     return pd.DataFrame(
@@ -98,6 +121,9 @@ def latest_item_state(df: pd.DataFrame) -> pd.DataFrame:
             "ITEM TYPE": last["ITEM TYPE"],
             "SUPPLIER": last["SUPPLIER"],
             "LAST_PERIOD": last["PERIOD"],
+            "DATA_END_PERIOD": df["PERIOD"].max(),
+            # If the forecast month were the next month of data, this would be its PERIODS_SINCE_LAST.
+            "PERIODS_SINCE_LAST": newest - last["PERIOD_INDEX"] + 1,
             "PREV_RETAIL_SALES": last["RETAIL SALES"],
             "PREV_RETAIL_TRANSFERS": last["RETAIL TRANSFERS"],
             "PREV_WAREHOUSE_SALES": last["WAREHOUSE SALES"],
@@ -108,11 +134,13 @@ def latest_item_state(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def features_for_month(item_state: pd.DataFrame, year: int, month: int) -> pd.DataFrame:
-    """Turn item-state rows into model inputs for a forecast of (year, month)."""
+    """
+    Turn item-state rows into model inputs for a forecast of (year, month).
+    The forecast is treated as the next month of data after the data ends.
+    """
     period = int(year) * 12 + int(month) - 1
     frame = item_state.copy()
-    if (frame["LAST_PERIOD"] >= period).any():
-        raise ValueError("the forecast month must be after the item's last recorded month")
+    if (frame["DATA_END_PERIOD"] >= period).any():
+        raise ValueError("the forecast month must be after the last month in the data")
     frame["MONTH"] = int(month)
-    frame["MONTHS_SINCE_LAST"] = period - frame["LAST_PERIOD"]
     return frame[FEATURE_COLUMNS]

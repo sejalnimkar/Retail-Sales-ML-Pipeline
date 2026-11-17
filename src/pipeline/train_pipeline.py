@@ -50,6 +50,16 @@ def write_report(results: dict, path: str) -> None:
         "",
         f"On test rows with non-zero sales only: R² (log) {m['r2_log']:.4f}, MAE {m['mae']:.2f}, WAPE {m['wape']:.1%}.",
         "",
+        "## Selected model vs. last-month baseline, by test month",
+        "",
+        "| Month | Item-months | Baseline R² (log) | Model R² (log) | Baseline MAE | Model MAE |",
+        "|---|---|---|---|---|---|",
+        *[
+            f"| {r['month']} | {r['rows']:,} | {r['baseline_last_month']['r2_log']:.4f} | {r['model']['r2_log']:.4f} "
+            f"| {r['baseline_last_month']['mae']:.2f} | {r['model']['mae']:.2f} |"
+            for r in results["test_by_month"]
+        ],
+        "",
         "## Selected model by item type (test months)",
         "",
         "| Item type | Item-months | R² (log scale) | MAE (units) | WAPE |",

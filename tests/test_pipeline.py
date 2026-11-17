@@ -47,7 +47,7 @@ def test_predict_pipeline_end_to_end(trained):
     out, _ = trained
     pipeline = PredictPipeline(str(out / "artifacts" / "model.pkl"), str(out / "artifacts" / "item_state.csv"))
     code = pipeline.items()["ITEM CODE"].iloc[0]
-    last = int(pipeline.history(code)["LAST_PERIOD"])
+    last = int(pipeline.history(code)["DATA_END_PERIOD"])
     prediction = pipeline.predict(code, year=(last + 1) // 12, month=(last + 1) % 12 + 1)
     assert np.isfinite(prediction) and prediction >= 0
     with pytest.raises(KeyError):

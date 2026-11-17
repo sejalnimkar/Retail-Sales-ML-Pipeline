@@ -16,35 +16,50 @@ from src.components.data_transformation import (
 
 
 def tiny():
-    """One item over three months, with a two-month gap before the last."""
+    """
+    Item A is in the data for periods 100, 101 and 105. Item B is there for
+    101, 104 and 105. Nothing at all exists for periods 102 and 103: the
+    source skipped them.
+    """
     return pd.DataFrame(
         {
-            "ITEM CODE": ["A", "A", "A"],
-            "PERIOD": [100, 101, 103],
-            "RETAIL SALES": [10.0, 20.0, 60.0],
-            "RETAIL TRANSFERS": [1.0, 2.0, 3.0],
-            "WAREHOUSE SALES": [5.0, 6.0, 7.0],
+            "ITEM CODE": ["A", "A", "A", "B", "B", "B"],
+            "PERIOD": [100, 101, 105, 101, 104, 105],
+            "RETAIL SALES": [10.0, 20.0, 60.0, 1.0, 2.0, 3.0],
+            "RETAIL TRANSFERS": [1.0, 2.0, 3.0, 0.0, 0.0, 0.0],
+            "WAREHOUSE SALES": [5.0, 6.0, 7.0, 0.0, 0.0, 0.0],
         }
     )
 
 
+def item(frame, code):
+    return frame[frame["ITEM CODE"] == code].sort_values("PERIOD").reset_index(drop=True)
+
+
 def test_history_features_by_hand():
-    out = add_history_features(tiny())
+    out = item(add_history_features(tiny()), "A")
     first, second, third = (out.iloc[i] for i in range(3))
     assert first[HISTORY_FEATURES].drop("ITEM_MONTHS_OBSERVED").isna().all()  # new item: nothing known
     assert first["ITEM_MONTHS_OBSERVED"] == 0
-    assert (second["PREV_RETAIL_SALES"], second["ITEM_MEAN_RETAIL_PRIOR"], second["MONTHS_SINCE_LAST"]) == (10, 10, 1)
+    assert (second["PREV_RETAIL_SALES"], second["ITEM_MEAN_RETAIL_PRIOR"], second["PERIODS_SINCE_LAST"]) == (10, 10, 1)
     assert (third["PREV_RETAIL_SALES"], third["PREV_WAREHOUSE_SALES"]) == (20, 6)
     assert third["ITEM_MEAN_RETAIL_PRIOR"] == 15      # mean of 10 and 20, not including 60
-    assert (third["ITEM_MONTHS_OBSERVED"], third["MONTHS_SINCE_LAST"]) == (2, 2)
+    # A missed one month of data (104). The months the source skipped (102, 103) do not count.
+    assert (third["ITEM_MONTHS_OBSERVED"], third["PERIODS_SINCE_LAST"]) == (2, 2)
+
+
+def test_months_missing_from_the_source_do_not_count_as_absence():
+    b = item(add_history_features(tiny()), "B")
+    # 101 -> 104 spans the hole in the source, but 104 is the very next month of data.
+    assert list(b["PERIODS_SINCE_LAST"].iloc[1:]) == [1, 1]
 
 
 def test_a_rows_features_do_not_depend_on_that_rows_own_sales():
     """The leakage guard: change the month being predicted; its features must not move."""
-    base = add_history_features(tiny())
+    base = item(add_history_features(tiny()), "A")
     changed = tiny()
     changed.loc[2, ["RETAIL SALES", "RETAIL TRANSFERS", "WAREHOUSE SALES"]] = [9999.0, 9999.0, 9999.0]
-    changed = add_history_features(changed)
+    changed = item(add_history_features(changed), "A")
     pd.testing.assert_series_equal(base.iloc[2][HISTORY_FEATURES], changed.iloc[2][HISTORY_FEATURES])
 
 
@@ -62,11 +77,10 @@ def test_item_state_matches_training_features(raw):
     """Serving must build the same numbers training would for the next month."""
     cleaned = clean(raw)
     code = cleaned["ITEM CODE"].iloc[0]
-    item = cleaned[cleaned["ITEM CODE"] == code]
-    future = item.tail(1).copy()
-    future["PERIOD"] = item["PERIOD"].max() + 3
+    future = cleaned[cleaned["ITEM CODE"] == code].tail(1).copy()
+    future["PERIOD"] = cleaned["PERIOD"].max() + 3
     future["MONTH"] = future["PERIOD"] % 12 + 1
-    expected = add_history_features(pd.concat([item, future])).iloc[-1]
+    expected = add_history_features(pd.concat([cleaned, future])).iloc[-1]
 
     state = latest_item_state(cleaned)
     period = int(future["PERIOD"].iloc[0])
@@ -77,7 +91,7 @@ def test_item_state_matches_training_features(raw):
 
 def test_cannot_forecast_a_month_already_in_the_data(raw):
     state = latest_item_state(clean(raw)).head(1)
-    last = int(state["LAST_PERIOD"].iloc[0])
+    last = int(state["DATA_END_PERIOD"].iloc[0])
     with pytest.raises(ValueError):
         features_for_month(state, last // 12, last % 12 + 1)
 

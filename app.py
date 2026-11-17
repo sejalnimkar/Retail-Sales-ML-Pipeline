@@ -42,8 +42,9 @@ with col1:
 
 history = pipeline.history(item_code)
 last_period = int(history["LAST_PERIOD"])
-# Offer the six months after the item's last recorded month.
-choices = [last_period + i for i in range(1, 7)]
+data_end = int(history["DATA_END_PERIOD"])
+# Offer the six months after the data ends.
+choices = [data_end + i for i in range(1, 7)]
 
 with col2:
     target = st.selectbox("Month to forecast", options=choices, format_func=period_label)
