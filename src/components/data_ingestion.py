@@ -31,6 +31,24 @@ def load_raw(path: str) -> pd.DataFrame:
     return df[RAW_COLUMNS]
 
 
+def to_number(values: pd.Series, column: str) -> pd.Series:
+    """
+    Parse a column that should be numeric but may arrive as text, as in some
+    downloads of the county file: thousands separators ("1,234.50"), stray
+    spaces, or blanks. Anything still unreadable becomes missing and is logged.
+    """
+    if pd.api.types.is_numeric_dtype(values):
+        return values.astype(float)
+    text = values.astype("string").str.strip().str.replace(",", "", regex=False)
+    text = text.mask(text.isin(["", "-", "NA", "N/A", "NULL", "null", "nan"]))
+    numbers = pd.to_numeric(text, errors="coerce")
+    unreadable = numbers.isna() & text.notna()
+    if unreadable.any():
+        examples = sorted(text[unreadable].unique()[:5].tolist())
+        logger.warning("%s: %d value(s) could not be read as numbers, e.g. %s", column, unreadable.sum(), examples)
+    return numbers.astype(float)
+
+
 def clean(df: pd.DataFrame) -> pd.DataFrame:
     """
     Returns one row per item per month.
@@ -40,6 +58,15 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     so dropping those rows would mean filtering on the answer.
     """
     df = df.copy()
+    for column in ["YEAR", "MONTH", *SALES_COLUMNS]:
+        df[column] = to_number(df[column], column)
+    bad_dates = df["YEAR"].isna() | df["MONTH"].isna() | ~df["MONTH"].between(1, 12)
+    if bad_dates.any():
+        logger.warning("Dropping %d row(s) with a missing or invalid YEAR/MONTH", bad_dates.sum())
+        df = df[~bad_dates]
+    df["YEAR"] = df["YEAR"].astype(int)
+    df["MONTH"] = df["MONTH"].astype(int)
+    df["ITEM TYPE"] = df["ITEM TYPE"].astype("string").str.strip().str.upper()
     df["SUPPLIER"] = df["SUPPLIER"].astype("string").str.strip()
     df = df[df["SUPPLIER"].notna() & ~df["SUPPLIER"].str.lower().eq("default")]
     df = df[df["ITEM TYPE"].isin(VALID_ITEM_TYPES) & df["ITEM CODE"].notna()]

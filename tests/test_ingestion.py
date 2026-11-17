@@ -1,6 +1,7 @@
+import pandas as pd
 import pytest
 
-from src.components.data_ingestion import clean, load_raw, period_label, split_periods
+from src.components.data_ingestion import clean, load_raw, period_label, split_periods, to_number
 
 
 def test_clean_drops_invalid_rows_and_keeps_zero_sales(raw):
@@ -39,3 +40,24 @@ def test_split_periods_needs_enough_months():
 def test_period_label():
     assert period_label(2019 * 12 + 0) == "2019-01"
     assert period_label(2020 * 12 + 11) == "2020-12"
+
+
+def test_to_number_reads_text_sales_values():
+    raw = pd.Series(["1,234.50", " 7 ", "", "N/A", "-3", "abc"], dtype="string")
+    out = to_number(raw, "RETAIL SALES")
+    assert out.iloc[:2].tolist() == [1234.5, 7.0]
+    assert out.iloc[2:4].isna().all() and out.iloc[4] == -3.0 and pd.isna(out.iloc[5])
+
+
+def test_clean_handles_a_file_where_every_column_is_text(raw, tmp_path):
+    """Some downloads of the county file come with numbers stored as text."""
+    as_text = raw.astype(str)
+    as_text.loc[as_text.index[0], "RETAIL SALES"] = "1,000.00"
+    as_text.loc[as_text.index[1], "MONTH"] = ""
+    path = tmp_path / "text.csv"
+    as_text.to_csv(path, index=False)
+    loaded = pd.read_csv(path, dtype=str)
+    cleaned = clean(loaded)
+    assert cleaned["RETAIL SALES"].dtype == float
+    assert cleaned["RETAIL SALES"].max() >= 1000.0
+    assert len(cleaned) > 0
