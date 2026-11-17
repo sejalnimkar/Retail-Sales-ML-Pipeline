@@ -1,106 +1,83 @@
-import os
-import sys
+"""
+Loading, cleaning and time-based splitting of the Montgomery County
+warehouse and retail sales data.
+
+The split is by calendar period, never random: the model is always scored on
+months that come after every month it was trained on, which is how it would
+be used in practice.
+"""
+
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from dataclasses import dataclass
 
-from src.exception import CustomException
-from src.logger import logging
-from src.components.data_transformation import DataTransformation
-from src.components.data_transformation import DataTransformationConfig
-from src.components.model_trainer import ModelTrainer
+from src.logger import logger
 
+RAW_COLUMNS = [
+    "YEAR", "MONTH", "SUPPLIER", "ITEM CODE", "ITEM DESCRIPTION", "ITEM TYPE",
+    "RETAIL SALES", "RETAIL TRANSFERS", "WAREHOUSE SALES",
+]
+SALES_COLUMNS = ["RETAIL SALES", "RETAIL TRANSFERS", "WAREHOUSE SALES"]
 
-# ── Config ────────────────────────────────────────────────────────────────────
-@dataclass
-class DataIngestionConfig:
-    train_data_path: str = os.path.join("artifacts", "train.csv")
-    test_data_path: str  = os.path.join("artifacts", "test.csv")
-    raw_data_path: str   = os.path.join("artifacts", "data.csv")
-
-
-# ── Item types to keep (drop KEGS, DUNNAGE, STR_SUPPLIES, REF) ───────────────
+# Kegs, dunnage, store supplies and reference rows are not retail products.
 VALID_ITEM_TYPES = {"WINE", "BEER", "LIQUOR", "NON-ALCOHOL"}
 
-# Keep only the top-N suppliers by total retail sales; everything else → "OTHER"
-TOP_N_SUPPLIERS = 30
+
+def load_raw(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path, dtype={"ITEM CODE": str})
+    df.columns = [c.strip().upper() for c in df.columns]
+    missing = set(RAW_COLUMNS) - set(df.columns)
+    if missing:
+        raise ValueError(f"{path} is missing expected columns: {sorted(missing)}")
+    logger.info("Raw data loaded: %s rows", f"{len(df):,}")
+    return df[RAW_COLUMNS]
 
 
-class DataIngestion:
-    def __init__(self):
-        self.ingestion_config = DataIngestionConfig()
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns one row per item per month.
 
-    def initiate_data_ingestion(self):
-        logging.info("Entered data ingestion")
-        try:
-            # ── 1. Load ───────────────────────────────────────────────────────
-            df = pd.read_csv(os.path.join("notebook", "data", "warehouse_and_retail_sales.csv"))
-            logging.info(f"Raw data loaded: {df.shape}")
+    Unlike the first version of this project, months where an item sold
+    nothing at retail are KEPT. Whether an item sells is not known in advance,
+    so dropping those rows would mean filtering on the answer.
+    """
+    df = df.copy()
+    df["SUPPLIER"] = df["SUPPLIER"].astype("string").str.strip()
+    df = df[df["SUPPLIER"].notna() & ~df["SUPPLIER"].str.lower().eq("default")]
+    df = df[df["ITEM TYPE"].isin(VALID_ITEM_TYPES) & df["ITEM CODE"].notna()]
+    df[SALES_COLUMNS] = df[SALES_COLUMNS].fillna(0.0)
 
-            # ── 2. Clean supplier column ──────────────────────────────────────
-            # Drop nulls and "Default" supplier rows (266 + 167 records)
-            df = df[df["SUPPLIER"].notna()]
-            df = df[~df["SUPPLIER"].str.strip().str.lower().eq("default")]
-            logging.info(f"After supplier cleanup: {df.shape}")
-
-            # ── 3. Filter to valid item types ─────────────────────────────────
-            df = df[df["ITEM TYPE"].isin(VALID_ITEM_TYPES)]
-            logging.info(f"After item type filter: {df.shape}")
-
-            # ── 4. Drop rows with zero retail sales ───────────────────────────
-            # We predict *how much* something sells, not whether it sells
-            df = df[df["RETAIL SALES"] > 0]
-            logging.info(f"After dropping zero retail sales: {df.shape}")
-
-            # ── 5. Drop leaky column ──────────────────────────────────────────
-            # RETAIL TRANSFERS correlates 0.96 with target → data leakage
-            df = df.drop(columns=["RETAIL TRANSFERS"], errors="ignore")
-
-            # ── 6. Collapse rare suppliers to "OTHER" ─────────────────────────
-            top_suppliers = (
-                df.groupby("SUPPLIER")["RETAIL SALES"]
-                .sum()
-                .nlargest(TOP_N_SUPPLIERS)
-                .index
-            )
-            df["SUPPLIER"] = df["SUPPLIER"].where(
-                df["SUPPLIER"].isin(top_suppliers), other="OTHER"
-            )
-
-            # ── 7. Keep only the columns we need ─────────────────────────────
-            df = df[["YEAR", "MONTH", "SUPPLIER", "ITEM TYPE", "ITEM CODE",
-         "WAREHOUSE SALES", "RETAIL SALES"]]
-
-            logging.info(f"Final cleaned shape: {df.shape}")
-
-            # ── 8. Save raw / train / test splits ────────────────────────────
-            os.makedirs(os.path.dirname(self.ingestion_config.train_data_path), exist_ok=True)
-            df.to_csv(self.ingestion_config.raw_data_path, index=False, header=True)
-
-            train_set, test_set = train_test_split(df, test_size=0.2, random_state=42)
-            train_set.to_csv(self.ingestion_config.train_data_path, index=False, header=True)
-            test_set.to_csv(self.ingestion_config.test_data_path, index=False, header=True)
-
-            logging.info("Data ingestion complete")
-            return (
-                self.ingestion_config.train_data_path,
-                self.ingestion_config.test_data_path,
-            )
-
-        except Exception as e:
-            raise CustomException(e, sys)
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    obj = DataIngestion()
-    train_data, test_data = obj.initiate_data_ingestion()
-
-    data_transformation = DataTransformation()
-    train_arr, test_arr, _ = data_transformation.initiate_data_transformation(
-        train_data, test_data
+    # A few items appear more than once in a month; combine them.
+    df = df.groupby(["YEAR", "MONTH", "ITEM CODE"], as_index=False).agg(
+        {
+            "SUPPLIER": "first",
+            "ITEM DESCRIPTION": "first",
+            "ITEM TYPE": "first",
+            "RETAIL SALES": "sum",
+            "RETAIL TRANSFERS": "sum",
+            "WAREHOUSE SALES": "sum",
+        }
     )
+    df["SUPPLIER"] = df["SUPPLIER"].astype(object)
+    # Months since year 0: lets us measure gaps, since the source skips some months.
+    df["PERIOD"] = df["YEAR"].astype(int) * 12 + df["MONTH"].astype(int) - 1
+    df = df.sort_values(["PERIOD", "ITEM CODE"]).reset_index(drop=True)
+    logger.info("Cleaned data: %s item-months over %d months", f"{len(df):,}", df["PERIOD"].nunique())
+    return df
 
-    model_trainer = ModelTrainer()
-    r2 = model_trainer.initiate_model_trainer(train_arr, test_arr)
-    print(f"Best model R² (on log-transformed target): {r2:.4f}")
+
+def split_periods(periods, val_fraction: float = 0.2, test_fraction: float = 0.2):
+    """Split the sorted distinct periods into (train, validation, test), oldest first."""
+    periods = sorted(set(periods))
+    if len(periods) < 3:
+        raise ValueError("need at least three distinct months to make a train/validation/test split")
+    n_test = max(1, round(len(periods) * test_fraction))
+    n_val = max(1, round(len(periods) * val_fraction))
+    if n_test + n_val >= len(periods):
+        raise ValueError("not enough months left for training after the validation and test splits")
+    train = periods[: len(periods) - n_val - n_test]
+    val = periods[len(periods) - n_val - n_test : len(periods) - n_test]
+    test = periods[len(periods) - n_test :]
+    return train, val, test
+
+
+def period_label(period: int) -> str:
+    return f"{period // 12}-{period % 12 + 1:02d}"
