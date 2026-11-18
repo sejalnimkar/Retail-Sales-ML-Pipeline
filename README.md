@@ -108,6 +108,8 @@ Pick a supplier and an item, choose a month after the item's last recorded month
 │   │   └── predict_pipeline.py     # Forecast for one item and month
 │   ├── logger.py
 │   └── utils.py                    # save/load, scoring (R², MAE, WAPE)
+├── notebook/
+│   └── montgomery_eda.ipynb        # Exploratory analysis of the county data
 ├── tests/                          # pytest: features, leakage guard, full run, the app itself
 ├── reports/                        # results.md and metrics.json from the latest full run
 ├── data/                           # raw CSV goes here (not tracked in git)
